@@ -1,0 +1,19 @@
+Swap Couple - audit changes (2026-11-13)
+
+Changes applied:
+1. Added SQLAlchemy pool_pre_ping for PostgreSQL connections to detect stale pooled connections.
+2. Disabled ProxyFix forwarded-host trust (x_host=0); only the expected Render client IP and HTTPS scheme headers are trusted.
+3. OTP digests are now keyed with the Flask SECRET_KEY before hashing, reducing offline guessing risk if the OTP table is exposed.
+4. OTP verification now safely handles missing expiry timestamps instead of raising a TypeError.
+
+Checks actually performed:
+- Python bytecode compilation of app.py: PASS.
+- HTML form audit: all templates containing forms include csrf_token(): PASS.
+
+Not performed:
+- Flask import / server startup / browser runtime tests.
+- PostgreSQL connectivity or migrations.
+- SMTP, SMS webhook, or S3 object storage integration tests.
+- Authentication abuse/rate-limit, authorization, privacy, or penetration testing.
+
+Status: DEVELOPMENT ONLY. Do not deploy publicly as production until the remaining tests and service configuration are completed.

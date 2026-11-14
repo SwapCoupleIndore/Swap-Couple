@@ -1,0 +1,18 @@
+SWAP COUPLE — DEVELOPMENT SOURCE UPDATE (2026-11-14)
+
+Changes in this package:
+- Correct calendar-based age calculation; under-18 users and future birthdates are rejected.
+- Production configuration now requires SMS_WEBHOOK_TOKEN.
+- SMS delivery fails closed in production if the webhook token is absent.
+- OTP resend throttling: 60-second cooldown and maximum 5 issued codes per hour per user/channel; previous codes are invalidated when a new code is issued.
+- Added source-level audit tests.
+- Excluded Python bytecode cache and local secret/database files from the release archive.
+
+Validation actually performed:
+- Python AST parse: PASS.
+- Python bytecode compilation: PASS (cache written outside release folder).
+- Source audit tests: 4 PASS.
+- Release archive inspection: no __pycache__ included.
+
+NOT PRODUCTION READY. Flask dependencies are not installed in this environment, so Flask application import/runtime, PostgreSQL, SMTP, SMS-provider, S3, browser-flow, and penetration tests have not been performed. The application still uses db.create_all() at startup and requires a proper reviewed database migration strategy before production deployment. Persistent login brute-force throttling and operational moderation/reporting also require further implementation and testing. Do not deploy publicly yet.
+No paid sexual-services booking or payment functionality is included.
