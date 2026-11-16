@@ -24,7 +24,7 @@ Set the following as private Render environment variables (never commit secrets)
 - `SMS_WEBHOOK_URL` (HTTPS), `SMS_WEBHOOK_TOKEN` — an owner-controlled SMS gateway adapter that accepts JSON `{\"to\": \"...\", \"message\": \"...\"}` and returns HTTP 2xx. Ensure India DLT/provider compliance.
 - `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, optional `S3_REGION` — private S3-compatible object storage.
 
-Production startup deliberately fails if critical settings are absent. Production image storage never falls back to local disk.
+Production startup deliberately fails if critical settings are absent. Production image storage never falls back to local disk. Render runs `flask --app app init-db` before Gunicorn. This is an idempotent first-install table creation step only; it does not alter existing tables and is NOT a substitute for versioned migrations when the schema changes.
 
 ## Release status
 

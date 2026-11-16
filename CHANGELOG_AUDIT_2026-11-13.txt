@@ -17,3 +17,13 @@ Not performed:
 - Authentication abuse/rate-limit, authorization, privacy, or penetration testing.
 
 Status: DEVELOPMENT ONLY. Do not deploy publicly as production until the remaining tests and service configuration are completed.
+
+
+Correction update (2026-11-16): removed unconditional create_all/Admin bootstrap at module import; added explicit init-db CLI bootstrap and updated Render/Procfile startup. This does not provide schema migrations. Runtime and provider integration tests remain unperformed.
+
+2026-11-16 additional hardening:
+- Added database-backed login throttling: 10 failed attempts per email/IP keyed digest per 15-minute window.
+- Login throttle records retain only a keyed digest of the email/IP pair, not raw IP or email values.
+- Private image filenames are now validated against the generated 40-hex-character JPG format before local or object-store read/write/delete.
+- Chat eligibility is rechecked on every access and now requires the visitor to remain unblocked, email-verified, phone-verified, approved, and to have an accepted message request.
+- Expanded source audit tests from 4 to 7.

@@ -1,18 +1,25 @@
-SWAP COUPLE — DEVELOPMENT SOURCE UPDATE (2026-11-14)
+SWAP COUPLE - CONSOLIDATED HANDOFF PACKAGE
+Build date: 2026-11-16
 
-Changes in this package:
-- Correct calendar-based age calculation; under-18 users and future birthdates are rejected.
-- Production configuration now requires SMS_WEBHOOK_TOKEN.
-- SMS delivery fails closed in production if the webhook token is absent.
-- OTP resend throttling: 60-second cooldown and maximum 5 issued codes per hour per user/channel; previous codes are invalidated when a new code is issued.
-- Added source-level audit tests.
-- Excluded Python bytecode cache and local secret/database files from the release archive.
+Included:
+- Flask application, templates, static assets, Render blueprint and Procfile.
+- Explicit first-install database initialization command.
+- Database-backed login throttling.
+- Private image filename validation.
+- Current approval/block-state checks on chat access.
+- Source audit tests (7 passing).
 
-Validation actually performed:
-- Python AST parse: PASS.
-- Python bytecode compilation: PASS (cache written outside release folder).
-- Source audit tests: 4 PASS.
-- Release archive inspection: no __pycache__ included.
+Validation performed in this environment:
+- Python AST parse: PASS
+- Python bytecode compilation: PASS
+- Source audit tests: 7/7 PASS
+- Runtime Flask integration: NOT RUN (Flask dependencies unavailable in this environment)
 
-NOT PRODUCTION READY. Flask dependencies are not installed in this environment, so Flask application import/runtime, PostgreSQL, SMTP, SMS-provider, S3, browser-flow, and penetration tests have not been performed. The application still uses db.create_all() at startup and requires a proper reviewed database migration strategy before production deployment. Persistent login brute-force throttling and operational moderation/reporting also require further implementation and testing. Do not deploy publicly yet.
-No paid sexual-services booking or payment functionality is included.
+Known outstanding work:
+- MSG91 Widget client/server verification integration is NOT implemented; SMS uses SMS_WEBHOOK_URL + SMS_WEBHOOK_TOKEN.
+- Versioned database migrations are NOT included. `init-db` uses SQLAlchemy create_all and does not alter existing tables.
+- Live PostgreSQL, SMTP, SMS provider and S3-compatible storage tests are NOT performed.
+- Full browser, end-to-end, penetration and production security testing are NOT performed.
+- Configure all required Render environment variables before starting the service.
+
+This is the most complete code handoff validated here, not a production certification. Review provider setup and test on a staging service before inviting real users.

@@ -4,8 +4,11 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
+    startCommand: flask --app app init-db && gunicorn --bind 0.0.0.0:$PORT app:app
+    healthCheckPath: /healthz
     envVars:
+      - key: APP_ENV
+        value: production
       - key: SECRET_KEY
         generateValue: true
       - key: ADMIN_EMAIL
@@ -30,3 +33,13 @@ services:
         sync: false
       - key: SMS_WEBHOOK_TOKEN
         sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
