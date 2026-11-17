@@ -6,9 +6,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_app_parses():
     ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))
 
-def test_production_requires_sms_token():
+def test_production_requires_msg91_credentials():
     text = (ROOT / "app.py").read_text(encoding="utf-8")
-    assert "'SMS_WEBHOOK_TOKEN'" in text
+    assert "'MSG91_AUTHKEY'" in text
+    assert "'MSG91_WIDGET_TOKEN'" in text
+    assert "verifyAccessToken" in text
 
 def test_otp_hourly_limit_exists():
     text = (ROOT / "app.py").read_text(encoding="utf-8")
