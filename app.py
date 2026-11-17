@@ -41,9 +41,9 @@ app.config['WTF_CSRF_TIME_LIMIT']=3600
 app.config['UPLOAD_DIR']=str(Path(app.instance_path)/'private_uploads')
 Path(app.config['UPLOAD_DIR']).mkdir(parents=True,exist_ok=True)
 if IS_PRODUCTION:
- required_prod = ['DATABASE_URL','ADMIN_EMAIL','ADMIN_PASSWORD','SMTP_HOST','SMTP_USERNAME','SMTP_PASSWORD','SMTP_FROM','SMS_WEBHOOK_URL','SMS_WEBHOOK_TOKEN','S3_BUCKET','S3_ENDPOINT_URL','S3_ACCESS_KEY_ID','S3_SECRET_ACCESS_KEY','PUBLIC_BASE_URL']
+ required_prod = ['DATABASE_URL','ADMIN_EMAIL','ADMIN_PASSWORD','SMTP_HOST','SMTP_USERNAME','SMTP_PASSWORD','SMTP_FROM','MSG91_WIDGET_ID','MSG91_WIDGET_TOKEN','MSG91_AUTHKEY','S3_BUCKET','S3_ENDPOINT_URL','S3_ACCESS_KEY_ID','S3_SECRET_ACCESS_KEY','PUBLIC_BASE_URL']
  missing_prod = [key for key in required_prod if not os.getenv(key)]
- if missing_prod or len(os.getenv('ADMIN_PASSWORD','')) < 12 or not os.getenv('PUBLIC_BASE_URL','').startswith('https://') or not os.getenv('SMS_WEBHOOK_URL','').startswith('https://'):
+ if missing_prod or len(os.getenv('ADMIN_PASSWORD','')) < 12 or not os.getenv('PUBLIC_BASE_URL','').startswith('https://'):
   raise RuntimeError('Production configuration incomplete. Set all required private environment variables, use HTTPS URLs, and use an admin password of at least 12 characters. Missing: '+', '.join(missing_prod))
 # Trust Render's client IP and HTTPS scheme, but never trust forwarded Host headers.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=0)
@@ -117,14 +117,26 @@ def mail(to,subject,body):
    s.starttls(context=ssl.create_default_context()); s.login(os.getenv('SMTP_USERNAME',''),os.getenv('SMTP_PASSWORD','')); s.send_message(msg)
   return True
  except Exception: app.logger.exception('SMTP delivery failed'); return False
-def sms(phone,body):
- endpoint=os.getenv('SMS_WEBHOOK_URL'); token=os.getenv('SMS_WEBHOOK_TOKEN')
- if not endpoint or not endpoint.startswith('https://') or (IS_PRODUCTION and not token): return False
+def normalize_mobile(phone):
+ digits=re.sub(r'\D','',phone or '')
+ if len(digits)==10: digits='91'+digits
+ return digits
+
+def verify_msg91_access_token(access_token, expected_phone):
+ authkey=os.getenv('MSG91_AUTHKEY','').strip()
+ if not authkey or not access_token or len(access_token)>5000: return False
+ payload=json.dumps({'authkey':authkey,'access-token':access_token}).encode()
+ req=urllib.request.Request('https://control.msg91.com/api/v5/widget/verifyAccessToken',data=payload,headers={'Content-Type':'application/json','Accept':'application/json'})
  try:
-  payload=json.dumps({'to':phone,'message':body}).encode()
-  req=urllib.request.Request(endpoint,data=payload,headers={'Content-Type':'application/json','Authorization':'Bearer '+(token or '')})
-  with urllib.request.urlopen(req,timeout=12) as res: return 200<=res.status<300
- except Exception: app.logger.exception('SMS delivery failed'); return False
+  with urllib.request.urlopen(req,timeout=12) as res:
+   if not 200 <= res.status < 300: return False
+   result=json.loads(res.read(16384).decode('utf-8'))
+  verified_identifier=normalize_mobile(str(result.get('message','')))
+  return result.get('type')=='success' and verified_identifier==normalize_mobile(expected_phone)
+ except Exception:
+  app.logger.warning('MSG91 access-token verification failed.')
+  return False
+
 def code_digest(code):
  return hmac.new(app.config['SECRET_KEY'].encode(), code.encode(), hashlib.sha256).hexdigest()
 def login_subject(email):
@@ -141,7 +153,7 @@ def issue_code(user,kind):
  # Invalidate earlier codes so only the newest code can be used.
  Code.query.filter_by(user_id=user.id,kind=kind).delete(); db.session.flush()
  code=f'{secrets.randbelow(1000000):06d}'
- sent=mail(user.email,'Swap Couple verification',f'Your verification code is {code}. It expires in 10 minutes.') if kind=='email' else sms(user.phone,f'Swap Couple verification code: {code} (10 minutes).')
+ sent=mail(user.email,'Swap Couple verification',f'Your verification code is {code}. It expires in 10 minutes.')
  if not sent: return False,'Delivery service configured नहीं है या संदेश भेजना असफल रहा।'
  db.session.add(Code(user_id=user.id,kind=kind,digest=code_digest(code),expires=now()+timedelta(minutes=10))); db.session.commit()
  return True,'Verification code भेज दिया गया है।'
@@ -194,17 +206,17 @@ def logout(): logout_user(); return redirect(url_for('home'))
 @login_required
 def status():
  if current_user.is_admin: return redirect(url_for('dashboard'))
- return render_template('status.html')
+ return render_template('status.html', msg91_widget_id=os.getenv('MSG91_WIDGET_ID',''), msg91_widget_token=os.getenv('MSG91_WIDGET_TOKEN',''), msg91_mobile=normalize_mobile(current_user.phone))
 @app.post('/send-code/<kind>')
 @login_required
 def send_code(kind):
- if current_user.is_admin or kind not in ('email','phone'): abort(403)
- if (kind=='email' and current_user.email_ok) or (kind=='phone' and current_user.phone_ok): return redirect(url_for('status'))
+ if current_user.is_admin or kind != 'email': abort(403)
+ if current_user.email_ok: return redirect(url_for('status'))
  ok,msg=issue_code(current_user,kind); flash(msg); return redirect(url_for('status'))
 @app.post('/verify/<kind>')
 @login_required
 def verify(kind):
- if current_user.is_admin or kind not in ('email','phone'): abort(403)
+ if current_user.is_admin or kind != 'email': abort(403)
  code=request.form.get('code','').strip(); entry=Code.query.filter_by(user_id=current_user.id,kind=kind).order_by(Code.issued.desc()).first()
  if not re.fullmatch(r'[0-9]{6}',code) or not entry or not entry.expires or entry.expires<now() or entry.attempts>=5: flash('Code समाप्त हो गया है। नया Code मँगाएँ।')
  else:
@@ -216,6 +228,28 @@ def verify(kind):
   else: flash('गलत Code।')
   db.session.commit()
  return redirect(url_for('status'))
+
+@app.post('/api/phone/verify-msg91')
+@login_required
+def verify_msg91_phone():
+ if current_user.is_admin or current_user.phone_ok: abort(403)
+ if not os.getenv('MSG91_AUTHKEY') or not os.getenv('MSG91_WIDGET_ID') or not os.getenv('MSG91_WIDGET_TOKEN'):
+  return {'ok':False,'message':'MSG91 configuration उपलब्ध नहीं है।'},503
+ cutoff=now()-timedelta(hours=1)
+ attempts=Code.query.filter(Code.user_id==current_user.id,Code.kind=='msg91',Code.issued>=cutoff).count()
+ if attempts>=5: return {'ok':False,'message':'एक घंटे में अधिकतम 5 प्रयास किए जा सकते हैं।'},429
+ db.session.add(Code(user_id=current_user.id,kind='msg91',digest='',expires=now(),issued=now())); db.session.commit()
+ payload=request.get_json(silent=True) or {}
+ access_token=str(payload.get('accessToken','')).strip()
+ if not re.fullmatch(r'[A-Za-z0-9._-]{20,5000}',access_token):
+  return {'ok':False,'message':'MSG91 से मिला access token मान्य नहीं है।'},400
+ if not verify_msg91_access_token(access_token,current_user.phone):
+  return {'ok':False,'message':'MSG91 ने इस मोबाइल नंबर का सत्यापन स्वीकार नहीं किया।'},400
+ current_user.phone_ok=True
+ Code.query.filter_by(user_id=current_user.id,kind='msg91').delete()
+ db.session.commit()
+ return {'ok':True,'message':'मोबाइल नंबर सफलतापूर्वक सत्यापित हो गया।'}
+
 def store_image(upload):
  if not upload or not upload.filename: raise ValueError('फोटो चुनें।')
  try:
@@ -328,7 +362,7 @@ def delete_photo(pid):
 def privacy(): return render_template('privacy.html')
 @app.after_request
 def headers(response):
- response.headers['X-Content-Type-Options']='nosniff'; response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'; response.headers['X-Frame-Options']='DENY'; response.headers['Referrer-Policy']='strict-origin-when-cross-origin'; response.headers['Cache-Control']='no-store' if current_user.is_authenticated else 'no-cache'; response.headers['Content-Security-Policy']="default-src 'self'; img-src 'self' data:; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'"
+ response.headers['X-Content-Type-Options']='nosniff'; response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'; response.headers['X-Frame-Options']='DENY'; response.headers['Referrer-Policy']='strict-origin-when-cross-origin'; response.headers['Cache-Control']='no-store' if current_user.is_authenticated else 'no-cache'; response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' 'unsafe-inline' https://verify.msg91.com https://verify.phone91.com; connect-src 'self' https://control.msg91.com https://api.msg91.com; img-src 'self' data:; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'"
  return response
 def initialize_database():
  # Explicit, idempotent first-install bootstrap. This creates missing tables but
