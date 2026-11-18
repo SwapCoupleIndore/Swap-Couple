@@ -1,8 +1,8 @@
 import os, re, secrets, hashlib, hmac, smtplib, ssl, urllib.request, json
+from io import BytesIO
+from PIL import Image, UnidentifiedImageError
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from io import BytesIO
-from pathlib import Path
 from email.message import EmailMessage
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, redirect, url_for, flash, abort, send_file
@@ -11,8 +11,6 @@ from flask_login import LoginManager, UserMixin, login_user, login_required, log
 from flask_wtf.csrf import CSRFProtect
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
-from PIL import Image, ImageOps
-import boto3
 
 load_dotenv()
 app=Flask(__name__)
@@ -38,39 +36,15 @@ app.config['SESSION_REFRESH_EACH_REQUEST']=True
 app.config['SESSION_COOKIE_SECURE']=os.getenv('PUBLIC_BASE_URL','').startswith('https://')
 app.config['REMEMBER_COOKIE_SECURE']=app.config['SESSION_COOKIE_SECURE']
 app.config['WTF_CSRF_TIME_LIMIT']=3600
-app.config['UPLOAD_DIR']=str(Path(app.instance_path)/'private_uploads')
-Path(app.config['UPLOAD_DIR']).mkdir(parents=True,exist_ok=True)
 if IS_PRODUCTION:
- required_prod = ['DATABASE_URL','ADMIN_EMAIL','ADMIN_PASSWORD','SMTP_HOST','SMTP_USERNAME','SMTP_PASSWORD','SMTP_FROM','MSG91_WIDGET_ID','MSG91_WIDGET_TOKEN','MSG91_AUTHKEY','S3_BUCKET','S3_ENDPOINT_URL','S3_ACCESS_KEY_ID','S3_SECRET_ACCESS_KEY','PUBLIC_BASE_URL']
+ required_prod = ['DATABASE_URL','ADMIN_EMAIL','ADMIN_PASSWORD','SMTP_HOST','SMTP_USERNAME','SMTP_PASSWORD','SMTP_FROM','MSG91_WIDGET_ID','MSG91_WIDGET_TOKEN','MSG91_AUTHKEY','PUBLIC_BASE_URL']
  missing_prod = [key for key in required_prod if not os.getenv(key)]
  if missing_prod or len(os.getenv('ADMIN_PASSWORD','')) < 12 or not os.getenv('PUBLIC_BASE_URL','').startswith('https://'):
   raise RuntimeError('Production configuration incomplete. Set all required private environment variables, use HTTPS URLs, and use an admin password of at least 12 characters. Missing: '+', '.join(missing_prod))
 # Trust Render's client IP and HTTPS scheme, but never trust forwarded Host headers.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=0)
 
-def object_store_enabled(): return bool(os.getenv('S3_BUCKET') and os.getenv('S3_ENDPOINT_URL') and os.getenv('S3_ACCESS_KEY_ID') and os.getenv('S3_SECRET_ACCESS_KEY'))
-def s3_client():
- return boto3.client('s3', endpoint_url=os.getenv('S3_ENDPOINT_URL'), aws_access_key_id=os.getenv('S3_ACCESS_KEY_ID'), aws_secret_access_key=os.getenv('S3_SECRET_ACCESS_KEY'), region_name=os.getenv('S3_REGION','auto'))
-def valid_private_filename(filename):
- return bool(filename and re.fullmatch(r'[a-f0-9]{40}\.jpg', filename))
-def save_private_image(filename, data):
- if not valid_private_filename(filename): raise ValueError('Invalid private image filename.')
- if object_store_enabled():
-  s3_client().put_object(Bucket=os.getenv('S3_BUCKET'), Key='private/'+filename, Body=data, ContentType='image/jpeg', ServerSideEncryption='AES256')
- elif IS_PRODUCTION:
-  raise RuntimeError('Private object storage is mandatory in production.')
- else:
-  (Path(app.config['UPLOAD_DIR'])/filename).write_bytes(data)
-def read_private_image(filename):
- if not valid_private_filename(filename): raise FileNotFoundError('Invalid private image reference.')
- if object_store_enabled(): return s3_client().get_object(Bucket=os.getenv('S3_BUCKET'), Key='private/'+filename)['Body'].read()
- if IS_PRODUCTION: raise RuntimeError('Private object storage is mandatory in production.')
- return (Path(app.config['UPLOAD_DIR'])/filename).read_bytes()
-def delete_private_image(filename):
- if not filename: return
- if not valid_private_filename(filename): raise ValueError('Invalid private image reference.')
- if object_store_enabled(): s3_client().delete_object(Bucket=os.getenv('S3_BUCKET'), Key='private/'+filename)
- elif not IS_PRODUCTION: (Path(app.config['UPLOAD_DIR'])/filename).unlink(missing_ok=True)
+# Private images are stored as binary data in PostgreSQL. Use a persistent, backed-up database plan.
 
 db=SQLAlchemy(app); login_manager=LoginManager(app); login_manager.login_view='login'; CSRFProtect(app)
 
@@ -87,6 +61,16 @@ class Meeting(db.Model):
  id=db.Column(db.Integer,primary_key=True); user_id=db.Column(db.Integer,db.ForeignKey('user.id')); when=db.Column(db.String(80)); location=db.Column(db.String(200)); note=db.Column(db.String(500)); status=db.Column(db.String(20),default='pending'); created=db.Column(db.DateTime,default=now)
 class Photo(db.Model):
  id=db.Column(db.Integer,primary_key=True); filename=db.Column(db.String(120)); public=db.Column(db.Boolean,default=False)
+class UserMedia(db.Model):
+ __tablename__='user_media'
+ id=db.Column(db.Integer,primary_key=True)
+ user_id=db.Column(db.Integer,db.ForeignKey('user.id'),nullable=False,index=True)
+ kind=db.Column(db.String(20),nullable=False,index=True)  # selfie or owner_photo
+ filename=db.Column(db.String(180),nullable=False)
+ mime_type=db.Column(db.String(40),nullable=False)
+ data=db.Column(db.LargeBinary,nullable=False)
+ size=db.Column(db.Integer,nullable=False)
+ created=db.Column(db.DateTime,default=now,nullable=False)
 class LoginAttempt(db.Model):
  id=db.Column(db.Integer,primary_key=True); subject_hash=db.Column(db.String(64),index=True,nullable=False); attempted=db.Column(db.DateTime,default=now,index=True,nullable=False); succeeded=db.Column(db.Boolean,default=False,nullable=False)
 @login_manager.user_loader
@@ -206,7 +190,8 @@ def logout(): logout_user(); return redirect(url_for('home'))
 @login_required
 def status():
  if current_user.is_admin: return redirect(url_for('dashboard'))
- return render_template('status.html', msg91_widget_id=os.getenv('MSG91_WIDGET_ID',''), msg91_widget_token=os.getenv('MSG91_WIDGET_TOKEN',''), msg91_mobile=normalize_mobile(current_user.phone))
+ selfie_uploaded=UserMedia.query.filter_by(user_id=current_user.id,kind='selfie').first() is not None
+ return render_template('status.html', msg91_widget_id=os.getenv('MSG91_WIDGET_ID',''), msg91_widget_token=os.getenv('MSG91_WIDGET_TOKEN',''), msg91_mobile=normalize_mobile(current_user.phone), selfie_uploaded=selfie_uploaded)
 @app.post('/send-code/<kind>')
 @login_required
 def send_code(kind):
@@ -250,28 +235,70 @@ def verify_msg91_phone():
  db.session.commit()
  return {'ok':True,'message':'मोबाइल नंबर सफलतापूर्वक सत्यापित हो गया।'}
 
-def store_image(upload):
- if not upload or not upload.filename: raise ValueError('फोटो चुनें।')
+def save_image_upload(file_storage):
+ if not file_storage or not file_storage.filename:
+  raise ValueError('कृपया image file चुनें।')
+ raw=file_storage.read(5*1024*1024+1)
+ if not raw or len(raw)>5*1024*1024:
+  raise ValueError('Image अधिकतम 5 MB की होनी चाहिए।')
  try:
-  im=Image.open(upload.stream); im.verify(); upload.stream.seek(0); im=Image.open(upload.stream); im=ImageOps.exif_transpose(im).convert('RGB'); im.thumbnail((1400,1400)); filename=secrets.token_hex(20)+'.jpg'; out=BytesIO(); im.save(out,'JPEG',quality=85); save_private_image(filename,out.getvalue()); return filename
- except Exception: raise ValueError('सही JPG/PNG फोटो अपलोड करें (अधिकतम 5 MB)।')
+  image=Image.open(BytesIO(raw)); image.verify()
+  fmt=image.format
+ except (UnidentifiedImageError, OSError, ValueError):
+  raise ValueError('केवल सही JPG, PNG या WEBP image स्वीकार है।')
+ mime={'JPEG':'image/jpeg','PNG':'image/png','WEBP':'image/webp'}.get(fmt)
+ if not mime: raise ValueError('केवल JPG, PNG या WEBP image स्वीकार है।')
+ return raw,mime
+
 @app.post('/selfie')
 @login_required
 def selfie():
- if current_user.is_admin or not (current_user.email_ok and current_user.phone_ok): abort(403)
- try: filename=store_image(request.files.get('selfie'))
- except ValueError as e: flash(str(e)); return redirect(url_for('status'))
- if current_user.selfie: delete_private_image(current_user.selfie)
- current_user.selfie=filename; current_user.approved=False; db.session.commit(); flash('Selfie समीक्षा के लिए भेज दी गई है।'); return redirect(url_for('status'))
+ if current_user.is_admin: abort(403)
+ if not current_user.email_ok or not current_user.phone_ok: abort(403)
+ try: raw,mime=save_image_upload(request.files.get('selfie'))
+ except ValueError as exc: flash(str(exc)); return redirect(url_for('status'))
+ old=UserMedia.query.filter_by(user_id=current_user.id,kind='selfie').first()
+ if old: db.session.delete(old)
+ db.session.add(UserMedia(user_id=current_user.id,kind='selfie',filename='selfie.'+mime.split('/')[-1],mime_type=mime,data=raw,size=len(raw)))
+ db.session.commit(); flash('Selfie सुरक्षित रूप से जमा हो गई है। Owner review के बाद approval मिलेगा।')
+ return redirect(url_for('status'))
+
+@app.get('/admin/selfie/<int:uid>')
+@owner_only
+def admin_selfie(uid):
+ media=UserMedia.query.filter_by(user_id=uid,kind='selfie').first_or_404()
+ return send_file(BytesIO(media.data),mimetype=media.mime_type,download_name=media.filename,as_attachment=False)
+
+@app.post('/admin/owner-photo')
+@owner_only
+def upload_owner_photo():
+ try: raw,mime=save_image_upload(request.files.get('photo'))
+ except ValueError as exc: flash(str(exc)); return redirect(url_for('dashboard'))
+ db.session.add(UserMedia(user_id=current_user.id,kind='owner_photo',filename='owner-photo.'+mime.split('/')[-1],mime_type=mime,data=raw,size=len(raw)))
+ db.session.commit(); flash('Profile photo upload हो गई।')
+ return redirect(url_for('dashboard'))
+
+@app.post('/admin/owner-photo/<int:mid>/delete')
+@owner_only
+def delete_owner_photo(mid):
+ media=db.get_or_404(UserMedia,mid)
+ if media.kind!='owner_photo' or media.user_id!=current_user.id: abort(404)
+ db.session.delete(media); db.session.commit(); flash('Photo delete कर दी गई।')
+ return redirect(url_for('dashboard'))
+
+@app.get('/media/<int:mid>')
+@login_required
+def view_media(mid):
+ media=db.get_or_404(UserMedia,mid)
+ if media.kind!='owner_photo': abort(404)
+ owner= db.session.get(User,media.user_id)
+ if not current_user.is_admin and not verified(): abort(403)
+ if not owner or not owner.is_admin: abort(404)
+ return send_file(BytesIO(media.data),mimetype=media.mime_type,download_name=media.filename,as_attachment=False)
+
 @app.route('/profile')
 @require_verified
-def profile(): return render_template('profile.html',photos=Photo.query.order_by(Photo.id).all())
-@app.route('/photo/<int:photo_id>')
-@require_verified
-def photo(photo_id):
- p=db.get_or_404(Photo,photo_id)
- if not (p.public or current_user.photo_access): abort(403)
- return send_file(BytesIO(read_private_image(p.filename)),mimetype='image/jpeg',download_name='photo.jpg')
+def profile(): return render_template('profile.html', photos=UserMedia.query.filter_by(user_id=(current_user.id if current_user.is_admin else User.query.filter_by(is_admin=True).first().id),kind='owner_photo').order_by(UserMedia.created.desc()).all() if User.query.filter_by(is_admin=True).first() else [])
 @app.post('/request-message')
 @require_verified
 def request_message():
@@ -302,24 +329,16 @@ def meeting():
  return redirect(url_for('chat'))
 @app.route('/admin')
 @owner_only
-def dashboard(): return render_template('admin.html',users=User.query.filter_by(is_admin=False).order_by(User.created.desc()).all(),requests=MessageRequest.query.order_by(MessageRequest.created.desc()).all(),meetings=Meeting.query.order_by(Meeting.created.desc()).all(),photos=Photo.query.all())
-@app.route('/admin/selfie/<int:uid>')
-@owner_only
-def admin_selfie(uid):
- u=db.get_or_404(User,uid)
- if not u.selfie: abort(404)
- return send_file(BytesIO(read_private_image(u.selfie)),mimetype='image/jpeg',download_name='selfie.jpg')
+def dashboard(): return render_template('admin.html',users=User.query.filter_by(is_admin=False).order_by(User.created.desc()).all(),requests=MessageRequest.query.order_by(MessageRequest.created.desc()).all(),meetings=Meeting.query.order_by(Meeting.created.desc()).all(),selfies={m.user_id:m for m in UserMedia.query.filter_by(kind='selfie').all()},owner_photos=UserMedia.query.filter_by(user_id=current_user.id,kind='owner_photo').order_by(UserMedia.created.desc()).all())
 @app.post('/admin/user/<int:uid>/<action>')
 @owner_only
 def admin_user(uid,action):
  u=db.get_or_404(User,uid)
  if u.is_admin: abort(403)
- if action=='approve' and u.email_ok and u.phone_ok and u.selfie and not u.blocked: u.approved=True
+ if action=='approve' and u.email_ok and u.phone_ok and UserMedia.query.filter_by(user_id=u.id,kind='selfie').first() and not u.blocked: u.approved=True
  elif action=='reject': u.approved=False
  elif action=='block': u.blocked=True; u.approved=False
  elif action=='unblock': u.blocked=False
- elif action=='photos': u.photo_access=not u.photo_access
- elif action=='delete-selfie' and u.selfie: delete_private_image(u.selfie); u.selfie=None
  else: abort(400)
  db.session.commit(); return redirect(url_for('dashboard'))
 @app.post('/admin/request/<int:rid>/<action>')
@@ -348,16 +367,6 @@ def admin_meeting(mid,action):
  m.status=action
  if action=='reschedule': m.when=request.form.get('when','').strip()[:80] or m.when
  db.session.commit(); return redirect(url_for('dashboard'))
-@app.post('/admin/photo')
-@owner_only
-def admin_photo():
- try: filename=store_image(request.files.get('photo'))
- except ValueError as e: flash(str(e)); return redirect(url_for('dashboard'))
- db.session.add(Photo(filename=filename,public=request.form.get('public')=='yes')); db.session.commit(); return redirect(url_for('dashboard'))
-@app.post('/admin/photo/<int:pid>/delete')
-@owner_only
-def delete_photo(pid):
- p=db.get_or_404(Photo,pid); delete_private_image(p.filename); db.session.delete(p); db.session.commit(); return redirect(url_for('dashboard'))
 @app.route('/privacy')
 def privacy(): return render_template('privacy.html')
 @app.after_request
