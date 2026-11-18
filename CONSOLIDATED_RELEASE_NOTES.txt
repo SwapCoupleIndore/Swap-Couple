@@ -1,0 +1,9 @@
+Swap Couple Permanent No-S3 release (2026-11-18)
+- PostgreSQL-backed private image storage via additive user_media table.
+- S3/R2 configuration removed.
+- Selfie upload for email+mobile verified users; owner-only selfie review.
+- Admin approval requires verified email, verified phone, selfie and owner action.
+- Owner photo upload/delete in admin dashboard; photos shown to verified members.
+- JPEG/PNG/WEBP validation and 5 MB limit.
+- init-db creates missing tables; future schema changes require reviewed migrations.
+- Live provider, deployment, backup/restore and production security tests remain outstanding.
