@@ -37,10 +37,46 @@ app.config['SESSION_COOKIE_SECURE']=os.getenv('PUBLIC_BASE_URL','').startswith('
 app.config['REMEMBER_COOKIE_SECURE']=app.config['SESSION_COOKIE_SECURE']
 app.config['WTF_CSRF_TIME_LIMIT']=3600
 if IS_PRODUCTION:
- required_prod = ['DATABASE_URL','ADMIN_EMAIL','ADMIN_PASSWORD','SMTP_HOST','SMTP_USERNAME','SMTP_PASSWORD','SMTP_FROM','MSG91_WIDGET_ID','MSG91_WIDGET_TOKEN','MSG91_AUTHKEY','PUBLIC_BASE_URL']
- missing_prod = [key for key in required_prod if not os.getenv(key)]
- if missing_prod or len(os.getenv('ADMIN_PASSWORD','')) < 12 or not os.getenv('PUBLIC_BASE_URL','').startswith('https://'):
-  raise RuntimeError('Production configuration incomplete. Set all required private environment variables, use HTTPS URLs, and use an admin password of at least 12 characters. Missing: '+', '.join(missing_prod))
+    required_prod = [
+        'DATABASE_URL',
+        'ADMIN_EMAIL',
+        'ADMIN_PASSWORD',
+        'SMTP_HOST',
+        'SMTP_USERNAME',
+        'SMTP_PASSWORD',
+        'SMTP_FROM',
+        'MSG91_WIDGET_ID',
+        'MSG91_WIDGET_TOKEN',
+        'MSG91_AUTHKEY',
+        'PUBLIC_BASE_URL'
+    ]
+
+    missing_prod = [
+        key for key in required_prod
+        if not os.getenv(key)
+    ]
+
+    errors = []
+
+    if missing_prod:
+        errors.append(
+            "Missing required variables: " + ", ".join(missing_prod)
+        )
+
+    if len(os.getenv('ADMIN_PASSWORD', '')) < 12:
+        errors.append(
+            "ADMIN_PASSWORD must be at least 12 characters."
+        )
+
+    if not os.getenv('PUBLIC_BASE_URL', '').strip().startswith('https://'):
+        errors.append(
+            "PUBLIC_BASE_URL must start with https://."
+        )
+
+    if errors:
+        raise RuntimeError(
+            "Production configuration incomplete: " + " ".join(errors)
+        )
 # Trust Render's client IP and HTTPS scheme, but never trust forwarded Host headers.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=0)
 
