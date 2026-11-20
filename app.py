@@ -1,9 +1,8 @@
-import os, re, secrets, hashlib, hmac, smtplib, ssl, urllib.request, json
+import os, re, secrets, hashlib, hmac, urllib.request, urllib.error, json
 from io import BytesIO
 from PIL import Image, UnidentifiedImageError
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from email.message import EmailMessage
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, redirect, url_for, flash, abort, send_file
 from flask_sqlalchemy import SQLAlchemy
@@ -37,46 +36,10 @@ app.config['SESSION_COOKIE_SECURE']=os.getenv('PUBLIC_BASE_URL','').startswith('
 app.config['REMEMBER_COOKIE_SECURE']=app.config['SESSION_COOKIE_SECURE']
 app.config['WTF_CSRF_TIME_LIMIT']=3600
 if IS_PRODUCTION:
-    required_prod = [
-        'DATABASE_URL',
-        'ADMIN_EMAIL',
-        'ADMIN_PASSWORD',
-        'SMTP_HOST',
-        'SMTP_USERNAME',
-        'SMTP_PASSWORD',
-        'SMTP_FROM',
-        'MSG91_WIDGET_ID',
-        'MSG91_WIDGET_TOKEN',
-        'MSG91_AUTHKEY',
-        'PUBLIC_BASE_URL'
-    ]
-
-    missing_prod = [
-        key for key in required_prod
-        if not os.getenv(key)
-    ]
-
-    errors = []
-
-    if missing_prod:
-        errors.append(
-            "Missing required variables: " + ", ".join(missing_prod)
-        )
-
-    if len(os.getenv('ADMIN_PASSWORD', '')) < 12:
-        errors.append(
-            "ADMIN_PASSWORD must be at least 12 characters."
-        )
-
-    if not os.getenv('PUBLIC_BASE_URL', '').strip().startswith('https://'):
-        errors.append(
-            "PUBLIC_BASE_URL must start with https://."
-        )
-
-    if errors:
-        raise RuntimeError(
-            "Production configuration incomplete: " + " ".join(errors)
-        )
+ required_prod = ['DATABASE_URL','ADMIN_EMAIL','ADMIN_PASSWORD','BREVO_API_KEY','BREVO_SENDER_EMAIL','PUBLIC_BASE_URL']
+ missing_prod = [key for key in required_prod if not os.getenv(key)]
+ if missing_prod or len(os.getenv('ADMIN_PASSWORD','')) < 12 or not os.getenv('PUBLIC_BASE_URL','').startswith('https://'):
+  raise RuntimeError('Production configuration incomplete. Set all required private environment variables, use HTTPS URLs, and use an admin password of at least 12 characters. Missing: '+', '.join(missing_prod))
 # Trust Render's client IP and HTTPS scheme, but never trust forwarded Host headers.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=0)
 
@@ -120,7 +83,7 @@ def owner_only(fn):
   if not current_user.is_admin: abort(403)
   return fn(*args,**kwargs)
  return inner
-def verified(): return current_user.is_authenticated and not current_user.is_admin and not current_user.blocked and current_user.email_ok and current_user.phone_ok and current_user.approved
+def verified(): return current_user.is_authenticated and not current_user.is_admin and not current_user.blocked and current_user.email_ok and current_user.approved
 def require_verified(fn):
  @wraps(fn)
  @login_required
@@ -129,32 +92,29 @@ def require_verified(fn):
   return fn(*a,**kw)
  return inner
 def mail(to,subject,body):
- host=os.getenv('SMTP_HOST'); sender=os.getenv('SMTP_FROM')
- if not host or not sender: return False
- msg=EmailMessage(); msg['From']=sender; msg['To']=to; msg['Subject']=subject; msg.set_content(body)
+ api_key=os.getenv('BREVO_API_KEY','').strip()
+ sender=os.getenv('BREVO_SENDER_EMAIL','').strip()
+ sender_name=os.getenv('BREVO_SENDER_NAME','Swap Couple').strip() or 'Swap Couple'
+ if not api_key or not sender: return False
+ payload={
+  'sender':{'email':sender,'name':sender_name},
+  'to':[{'email':to}],
+  'subject':subject,
+  'textContent':body,
+  'htmlContent':'<html><body><p>'+body.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace(chr(10),'<br>')+'</p></body></html>'
+ }
+ req=urllib.request.Request('https://api.brevo.com/v3/smtp/email',
+  data=json.dumps(payload).encode('utf-8'),
+  headers={'api-key':api_key,'Content-Type':'application/json','Accept':'application/json'},
+  method='POST')
  try:
-  with smtplib.SMTP(host,int(os.getenv('SMTP_PORT','587')),timeout=12) as s:
-   s.starttls(context=ssl.create_default_context()); s.login(os.getenv('SMTP_USERNAME',''),os.getenv('SMTP_PASSWORD','')); s.send_message(msg)
-  return True
- except Exception: app.logger.exception('SMTP delivery failed'); return False
-def normalize_mobile(phone):
- digits=re.sub(r'\D','',phone or '')
- if len(digits)==10: digits='91'+digits
- return digits
-
-def verify_msg91_access_token(access_token, expected_phone):
- authkey=os.getenv('MSG91_AUTHKEY','').strip()
- if not authkey or not access_token or len(access_token)>5000: return False
- payload=json.dumps({'authkey':authkey,'access-token':access_token}).encode()
- req=urllib.request.Request('https://control.msg91.com/api/v5/widget/verifyAccessToken',data=payload,headers={'Content-Type':'application/json','Accept':'application/json'})
- try:
-  with urllib.request.urlopen(req,timeout=12) as res:
-   if not 200 <= res.status < 300: return False
-   result=json.loads(res.read(16384).decode('utf-8'))
-  verified_identifier=normalize_mobile(str(result.get('message','')))
-  return result.get('type')=='success' and verified_identifier==normalize_mobile(expected_phone)
+  with urllib.request.urlopen(req,timeout=15) as response:
+   return 200 <= response.status < 300
+ except urllib.error.HTTPError as exc:
+  app.logger.error('Brevo email delivery failed with HTTP %s.',exc.code)
+  return False
  except Exception:
-  app.logger.warning('MSG91 access-token verification failed.')
+  app.logger.exception('Brevo email delivery failed.')
   return False
 
 def code_digest(code):
@@ -198,7 +158,7 @@ def register():
    flash('सही विवरण, 18+ उम्र और कम-से-कम 12 अक्षरों का Password दर्ज करें।')
   elif User.query.filter((User.email==email)|(User.phone==phone)).first(): flash('Email या मोबाइल पहले से पंजीकृत है।')
   else:
-   u=User(name=name,email=email,phone=phone,city=city,birthdate=birth,password_hash=generate_password_hash(password)); db.session.add(u); db.session.commit(); login_user(u); flash('Account बन गया। अब Email और Mobile verify करें।'); return redirect(url_for('status'))
+   u=User(name=name,email=email,phone=phone,city=city,birthdate=birth,password_hash=generate_password_hash(password),phone_ok=True); db.session.add(u); db.session.commit(); login_user(u); flash('Account बन गया। अब Email verify करें और Selfie जमा करें।'); return redirect(url_for('status'))
  return render_template('register.html')
 @app.route('/login',methods=['GET','POST'])
 def login():
@@ -227,7 +187,7 @@ def logout(): logout_user(); return redirect(url_for('home'))
 def status():
  if current_user.is_admin: return redirect(url_for('dashboard'))
  selfie_uploaded=UserMedia.query.filter_by(user_id=current_user.id,kind='selfie').first() is not None
- return render_template('status.html', msg91_widget_id=os.getenv('MSG91_WIDGET_ID',''), msg91_widget_token=os.getenv('MSG91_WIDGET_TOKEN',''), msg91_mobile=normalize_mobile(current_user.phone), selfie_uploaded=selfie_uploaded)
+ return render_template('status.html', selfie_uploaded=selfie_uploaded)
 @app.post('/send-code/<kind>')
 @login_required
 def send_code(kind):
@@ -243,33 +203,11 @@ def verify(kind):
  else:
   entry.attempts+=1
   if secrets.compare_digest(entry.digest,code_digest(code)):
-   if kind=='email': current_user.email_ok=True
-   else: current_user.phone_ok=True
+   current_user.email_ok=True
    Code.query.filter_by(user_id=current_user.id,kind=kind).delete(); flash('Verification सफल।')
   else: flash('गलत Code।')
   db.session.commit()
  return redirect(url_for('status'))
-
-@app.post('/api/phone/verify-msg91')
-@login_required
-def verify_msg91_phone():
- if current_user.is_admin or current_user.phone_ok: abort(403)
- if not os.getenv('MSG91_AUTHKEY') or not os.getenv('MSG91_WIDGET_ID') or not os.getenv('MSG91_WIDGET_TOKEN'):
-  return {'ok':False,'message':'MSG91 configuration उपलब्ध नहीं है।'},503
- cutoff=now()-timedelta(hours=1)
- attempts=Code.query.filter(Code.user_id==current_user.id,Code.kind=='msg91',Code.issued>=cutoff).count()
- if attempts>=5: return {'ok':False,'message':'एक घंटे में अधिकतम 5 प्रयास किए जा सकते हैं।'},429
- db.session.add(Code(user_id=current_user.id,kind='msg91',digest='',expires=now(),issued=now())); db.session.commit()
- payload=request.get_json(silent=True) or {}
- access_token=str(payload.get('accessToken','')).strip()
- if not re.fullmatch(r'[A-Za-z0-9._-]{20,5000}',access_token):
-  return {'ok':False,'message':'MSG91 से मिला access token मान्य नहीं है।'},400
- if not verify_msg91_access_token(access_token,current_user.phone):
-  return {'ok':False,'message':'MSG91 ने इस मोबाइल नंबर का सत्यापन स्वीकार नहीं किया।'},400
- current_user.phone_ok=True
- Code.query.filter_by(user_id=current_user.id,kind='msg91').delete()
- db.session.commit()
- return {'ok':True,'message':'मोबाइल नंबर सफलतापूर्वक सत्यापित हो गया।'}
 
 def save_image_upload(file_storage):
  if not file_storage or not file_storage.filename:
@@ -290,7 +228,7 @@ def save_image_upload(file_storage):
 @login_required
 def selfie():
  if current_user.is_admin: abort(403)
- if not current_user.email_ok or not current_user.phone_ok: abort(403)
+ if not current_user.email_ok: abort(403)
  try: raw,mime=save_image_upload(request.files.get('selfie'))
  except ValueError as exc: flash(str(exc)); return redirect(url_for('status'))
  old=UserMedia.query.filter_by(user_id=current_user.id,kind='selfie').first()
@@ -345,7 +283,7 @@ def request_message():
 def chat_allowed(uid):
  u=db.session.get(User,uid)
  r=MessageRequest.query.filter_by(user_id=uid).first()
- return bool(u and not u.is_admin and not u.blocked and u.email_ok and u.phone_ok and u.approved and r and r.status=='accepted')
+ return bool(u and not u.is_admin and not u.blocked and u.email_ok and u.approved and r and r.status=='accepted')
 @app.route('/chat',methods=['GET','POST'])
 @require_verified
 def chat():
@@ -371,7 +309,7 @@ def dashboard(): return render_template('admin.html',users=User.query.filter_by(
 def admin_user(uid,action):
  u=db.get_or_404(User,uid)
  if u.is_admin: abort(403)
- if action=='approve' and u.email_ok and u.phone_ok and UserMedia.query.filter_by(user_id=u.id,kind='selfie').first() and not u.blocked: u.approved=True
+ if action=='approve' and u.email_ok and UserMedia.query.filter_by(user_id=u.id,kind='selfie').first() and not u.blocked: u.approved=True
  elif action=='reject': u.approved=False
  elif action=='block': u.blocked=True; u.approved=False
  elif action=='unblock': u.blocked=False
@@ -383,7 +321,7 @@ def admin_request(rid,action):
  r=db.get_or_404(MessageRequest,rid)
  if action not in ('accepted','rejected'): abort(400)
  u=db.session.get(User,r.user_id)
- if action=='accepted' and (not u or u.blocked or not (u.email_ok and u.phone_ok and u.approved)): abort(403)
+ if action=='accepted' and (not u or u.blocked or not (u.email_ok and u.approved)): abort(403)
  r.status=action; db.session.commit(); return redirect(url_for('dashboard'))
 @app.route('/admin/chat/<int:uid>',methods=['GET','POST'])
 @owner_only
@@ -407,7 +345,7 @@ def admin_meeting(mid,action):
 def privacy(): return render_template('privacy.html')
 @app.after_request
 def headers(response):
- response.headers['X-Content-Type-Options']='nosniff'; response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'; response.headers['X-Frame-Options']='DENY'; response.headers['Referrer-Policy']='strict-origin-when-cross-origin'; response.headers['Cache-Control']='no-store' if current_user.is_authenticated else 'no-cache'; response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' 'unsafe-inline' https://verify.msg91.com https://verify.phone91.com; connect-src 'self' https://control.msg91.com https://api.msg91.com; img-src 'self' data:; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'"
+ response.headers['X-Content-Type-Options']='nosniff'; response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'; response.headers['X-Frame-Options']='DENY'; response.headers['Referrer-Policy']='strict-origin-when-cross-origin'; response.headers['Cache-Control']='no-store' if current_user.is_authenticated else 'no-cache'; response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'"
  return response
 def initialize_database():
  # Explicit, idempotent first-install bootstrap. This creates missing tables but

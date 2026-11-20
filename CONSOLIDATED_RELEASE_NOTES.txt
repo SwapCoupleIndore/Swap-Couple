@@ -1,9 +1,9 @@
-Swap Couple Permanent No-S3 release (2026-11-18)
-- PostgreSQL-backed private image storage via additive user_media table.
-- S3/R2 configuration removed.
-- Selfie upload for email+mobile verified users; owner-only selfie review.
-- Admin approval requires verified email, verified phone, selfie and owner action.
-- Owner photo upload/delete in admin dashboard; photos shown to verified members.
-- JPEG/PNG/WEBP validation and 5 MB limit.
-- init-db creates missing tables; future schema changes require reviewed migrations.
-- Live provider, deployment, backup/restore and production security tests remain outstanding.
+Swap Couple — Brevo Email OTP / No-SMS release (2026-11-19)
+- Brevo HTTPS transactional email API replaces SMTP.
+- MSG91 and SMS OTP removed from backend, templates, CSP and Render blueprint.
+- Mobile number remains in registration and owner dashboard but is not OTP-verified.
+- Email OTP + private selfie + manual admin approval gate membership.
+- Legacy phone_ok database column retained for compatibility; no longer used by access-control checks.
+- Existing accounts/admin are preserved; no destructive database reset or migration is included.
+- Existing PostgreSQL media storage, privacy, chat, meeting, login and other workflows retained.
+- Automated source tests: 10 passed. Live provider/deployment/E2E tests remain outstanding.

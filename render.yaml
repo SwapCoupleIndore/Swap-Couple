@@ -19,19 +19,9 @@ services:
         sync: false
       - key: PUBLIC_BASE_URL
         sync: false
-      - key: SMTP_HOST
+      - key: BREVO_API_KEY
         sync: false
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_USERNAME
+      - key: BREVO_SENDER_EMAIL
         sync: false
-      - key: SMTP_PASSWORD
-        sync: false
-      - key: SMTP_FROM
-        sync: false
-      - key: MSG91_WIDGET_ID
-        sync: false
-      - key: MSG91_WIDGET_TOKEN
-        sync: false
-      - key: MSG91_AUTHKEY
-        sync: false
+      - key: BREVO_SENDER_NAME
+        value: Swap Couple

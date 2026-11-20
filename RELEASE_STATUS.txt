@@ -1,22 +1,26 @@
-SWAP COUPLE — PERMANENT NO-S3 ARCHITECTURE PACKAGE
-Build date: 2026-11-18
+SWAP COUPLE — BREVO EMAIL OTP / NO-SMS RELEASE
+Build date: 2026-11-19
 
-Storage architecture:
-- Visitor selfies and owner profile photos are stored as binary image data in PostgreSQL using a dedicated additive user_media table.
-- No S3, Cloudflare R2, object-storage account, or ephemeral local upload directory is used.
-- Uploads accept validated JPEG, PNG, or WEBP images up to 5 MB each.
-- Visitor selfies are visible only to the authenticated owner/admin. Owner profile photos are served only to authenticated, approved members (and the owner).
-- Owner approval requires verified email, verified mobile, a submitted selfie, and an explicit owner approval action.
-- The new user_media table is created by init-db on first deployment; existing tables are not altered. This is additive and compatible with existing DB schema, but future schema changes still require reviewed migrations.
+Changes in this package:
+- Email OTP uses Brevo HTTPS Transactional Email API.
+- SMTP delivery and all MSG91 integration code/configuration/UI are removed.
+- Mobile number remains a required registration field and is displayed in the owner dashboard; it is not OTP-verified.
+- Email verification and private selfie submission are required before owner approval.
+- Admin approval requires verified email, submitted selfie, and an unblocked account.
+- Existing phone_ok database column is retained for compatibility with the existing database, but it is no longer used for authorization, approval, or chat.
+- Existing user records and admin account are not deleted or reset.
+- PostgreSQL binary image storage, private selfie access, registration age validation, login throttling, chat, meeting and existing profile workflows are retained.
 
-Included: Flask application, templates, static assets, Render blueprint and Procfile; MSG91 Widget server-side access-token verification (live provider test not performed); Brevo SMTP email OTP; database-backed login throttling and OTP limits; registration, approval/blocking, message requests, private chat and meeting requests.
+Automated validation:
+- Python syntax compilation: PASS.
+- Source audit tests: 10 passed.
+- Live Brevo API, Render deployment, PostgreSQL migration/runtime, browser end-to-end, backup/restore and production security tests have NOT been performed.
 
-Permanent operation requirements:
-- Use a persistent PostgreSQL plan that does not expire or suspend data unexpectedly. The previously created Render Free database has an expiry date and is not suitable for permanent operation unless upgraded or replaced with a non-expiring plan.
-- Back up PostgreSQL regularly. Database-stored images increase database size and backup/restore time. Monitor capacity and charges.
-- Render free web services may sleep; continuous availability requires an always-on plan.
-- This is a permanent storage design, but service continuity depends on paid/persistent hosting choices and backups.
+Required Render environment variables:
+DATABASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD, PUBLIC_BASE_URL (HTTPS), SECRET_KEY (32+ characters), BREVO_API_KEY, BREVO_SENDER_EMAIL. Optional BREVO_SENDER_NAME.
 
-Required Render variables: DATABASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD, PUBLIC_BASE_URL, SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM, MSG91_WIDGET_ID, MSG91_WIDGET_TOKEN, MSG91_AUTHKEY. SECRET_KEY must be at least 32 random characters (Blueprint can generate it).
-
-Validation: source tests and syntax checks are included; live Render/PostgreSQL/Brevo/MSG91, browser end-to-end, backup/restore and production security tests have NOT been performed. init-db creates missing tables only; it is not a general migration engine. Do not invite real users until end-to-end tests, privacy/access checks and backup/restore are complete.
+Deployment notes:
+1. Add Brevo variables to Render before deploying.
+2. Do not remove the existing database or reset accounts.
+3. Remove obsolete SMTP and MSG91 variables after the new deployment is confirmed healthy.
+4. Test email OTP, selfie upload, admin approval, profile access, chat and meeting flow before inviting users.
