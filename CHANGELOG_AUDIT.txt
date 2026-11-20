@@ -1,0 +1,29 @@
+Swap Couple - audit changes (2026-11-13)
+
+Changes applied:
+1. Added SQLAlchemy pool_pre_ping for PostgreSQL connections to detect stale pooled connections.
+2. Disabled ProxyFix forwarded-host trust (x_host=0); only the expected Render client IP and HTTPS scheme headers are trusted.
+3. OTP digests are now keyed with the Flask SECRET_KEY before hashing, reducing offline guessing risk if the OTP table is exposed.
+4. OTP verification now safely handles missing expiry timestamps instead of raising a TypeError.
+
+Checks actually performed:
+- Python bytecode compilation of app.py: PASS.
+- HTML form audit: all templates containing forms include csrf_token(): PASS.
+
+Not performed:
+- Flask import / server startup / browser runtime tests.
+- PostgreSQL connectivity or migrations.
+- SMTP, SMS webhook, or S3 object storage integration tests.
+- Authentication abuse/rate-limit, authorization, privacy, or penetration testing.
+
+Status: DEVELOPMENT ONLY. Do not deploy publicly as production until the remaining tests and service configuration are completed.
+
+
+Correction update (2026-11-16): removed unconditional create_all/Admin bootstrap at module import; added explicit init-db CLI bootstrap and updated Render/Procfile startup. This does not provide schema migrations. Runtime and provider integration tests remain unperformed.
+
+2026-11-16 additional hardening:
+- Added database-backed login throttling: 10 failed attempts per email/IP keyed digest per 15-minute window.
+- Login throttle records retain only a keyed digest of the email/IP pair, not raw IP or email values.
+- Private image filenames are now validated against the generated 40-hex-character JPG format before local or object-store read/write/delete.
+- Chat eligibility is rechecked on every access and now requires the visitor to remain unblocked, email-verified, phone-verified, approved, and to have an accepted message request.
+- Expanded source audit tests from 4 to 7.
